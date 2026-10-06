@@ -7,9 +7,14 @@ Chạy thật:   python -m lab.runner --condition baseline --tasks learn
 import argparse
 import json
 from pathlib import Path
-
+import shutil
+import tempfile
+import time
+from datetime import datetime, timezone
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 
+from .agent import build_agent
 from .grading import grade                                                      # có sẵn
 from .tasks import ROOT, get_task, hash_dir, list_tasks, prepare_sandbox         # có sẵn
 
@@ -47,25 +52,143 @@ def render_trace(messages) -> str:
 
 
 def run_task(task_id: str, condition: str, results_dir="results", model=None, recursion_limit: int = 60) -> dict:
-    """Chạy MỘT tác vụ dưới MỘT điều kiện, chấm điểm, ghi kết quả, và trả về bản ghi (record).
+        cfg = CONDITIONS[condition]
+        task = get_task(task_id)
 
-    Ghi vào: <results_dir>/<condition>/<task_id>/run.json và trace.md  (trace.md = render_trace(messages)).
-    Bản ghi `run.json` phải có các khóa:
-      task, condition, role, score, passed, total, checks,
-      tokens {input, output, total}       - cộng dồn mọi lần gọi LLM, kể cả subagent (dùng UsageMetadataCallbackHandler)
-      tool_calls                          - số tool call trong các AIMessage của luồng chính (không gồm việc bên trong subagent)
-      subagent_calls                      - số tool call có tên "task" (giao việc cho subagent)
-      skills_read                         - số skill KHÁC NHAU đã được đọc: với mỗi tool call "read_file" có file_path chứa
-                                            "skills/", lấy tên thư mục ngay sau "skills/" rồi đếm các tên khác nhau
-                                            (đọc lại cùng một skill chỉ tính một lần)
-      skills_modified (bool)              - thư mục skills trong sandbox bị đổi trong lúc chạy (so hash_dir trước/sau)
-      skills_sha256                       - hash_dir(sandbox/"skills") TRƯỚC khi chạy (để đối chiếu với skill đã đóng băng)
-      timestamp                           - thời điểm bắt đầu, UTC, dạng ISO-8601
-      seconds, final_message, error (None nếu không lỗi)
-    Lỗi khi chạy tác tử KHÔNG được làm chương trình dừng: ghi vào `error` và vẫn chấm điểm.
-    Sandbox là thư mục tạm NGOÀI kho mã nguồn và phải được xóa sau khi chạy.
-    """
-    raise NotImplementedError("TODO 1: cài đặt run_task (xem guides/pseudocode/03_runner.md)")
+        skills_dir = ROOT / cfg["skills_dir"] if cfg["skills_dir"] else None
+
+        out = Path(results_dir) / condition / task_id
+        out.mkdir(parents=True, exist_ok=True)
+
+        sandbox = Path(tempfile.mkdtemp())
+
+        record = {
+            "task": task_id,
+            "condition": condition,
+            "role": task.role,
+            "error": None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        messages = []
+
+        try:
+            prepare_sandbox(task, sandbox, skills_dir)
+
+            hash_before = hash_dir(sandbox / "skills")
+            record["skills_sha256"] = hash_before
+
+            agent = build_agent(
+                sandbox,
+                mode=cfg["mode"],
+                use_skills=(skills_dir is not None),
+                model=model,
+            )
+
+            usage = UsageMetadataCallbackHandler()
+            t0 = time.time()
+
+            try:
+                result = agent.invoke(
+                    {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": task.instruction,
+                            }
+                        ]
+                    },
+                    config={
+                        "callbacks": [usage],
+                        "recursion_limit": recursion_limit,
+                    },
+                )
+
+                messages = result["messages"]
+                final = messages[-1].content if messages else ""
+
+            except Exception as exc:  # noqa: BLE001
+                record["error"] = f"{type(exc).__name__}: {exc}"
+                messages = []
+                final = ""
+
+            record["seconds"] = round(time.time() - t0, 1)
+
+            input_tokens = 0
+            output_tokens = 0
+            total_tokens = 0
+
+            for metadata in usage.usage_metadata.values():
+                input_tokens += metadata.get("input_tokens", 0)
+                output_tokens += metadata.get("output_tokens", 0)
+                total_tokens += metadata.get("total_tokens", 0)
+
+            record["tokens"] = {
+                "input": input_tokens,
+                "output": output_tokens,
+                "total": total_tokens,
+            }
+
+            calls = []
+
+            for message in messages:
+                if isinstance(message, AIMessage):
+                    calls.extend(message.tool_calls)
+
+            record["tool_calls"] = len(calls)
+            record["subagent_calls"] = sum(
+                1 for call in calls if call.get("name") == "task"
+            )
+
+            skills_read = set()
+
+            for call in calls:
+                if call.get("name") != "read_file":
+                    continue
+
+                file_path = str(call.get("args", {}).get("file_path", ""))
+                normalized = file_path.replace("\\", "/")
+
+                if "skills/" not in normalized:
+                    continue
+
+                after_skills = normalized.split("skills/", 1)[1]
+                skill_name = after_skills.split("/", 1)[0]
+
+                if skill_name:
+                    skills_read.add(skill_name)
+
+            record["skills_read"] = len(skills_read)
+            record["skills_modified"] = (
+                hash_dir(sandbox / "skills") != hash_before
+            )
+            record["final_message"] = final
+
+            g = grade(task, sandbox / "workspace")
+
+            record.update(
+                {
+                    "score": g["score"],
+                    "passed": g["passed"],
+                    "total": g["total"],
+                    "checks": g["checks"],
+                }
+            )
+
+            (out / "trace.md").write_text(
+                render_trace(messages),
+                encoding="utf-8",
+            )
+
+        finally:
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+        (out / "run.json").write_text(
+            json.dumps(record, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        return record
 
 
 def main(argv=None):

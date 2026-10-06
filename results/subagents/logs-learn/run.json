@@ -1,0 +1,69 @@
+{
+  "task": "logs-learn",
+  "condition": "subagents",
+  "role": "learn",
+  "error": null,
+  "timestamp": "2026-10-06T16:34:08.371401+00:00",
+  "skills_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "seconds": 7.7,
+  "tokens": {
+    "input": 19539,
+    "output": 484,
+    "total": 20023
+  },
+  "tool_calls": 2,
+  "subagent_calls": 1,
+  "skills_read": 0,
+  "skills_modified": false,
+  "final_message": "I parsed the log file but found no entries with level ERROR or CRITICAL, so the errors.json file contains empty entries and counts_by_service. If you want, I can double-check the log file or show you some of its content to verify.",
+  "score": 0.0,
+  "passed": 0,
+  "total": 9,
+  "checks": [
+    {
+      "name": "valid_structure",
+      "passed": false,
+      "detail": "structure: missing keys or wrong types"
+    },
+    {
+      "name": "entry_count",
+      "passed": false,
+      "detail": "KeyError: 'errors'"
+    },
+    {
+      "name": "timestamps_utc",
+      "passed": false,
+      "detail": "KeyError: 'errors'"
+    },
+    {
+      "name": "exception_fields",
+      "passed": false,
+      "detail": "KeyError: 'errors'"
+    },
+    {
+      "name": "repeat_counts",
+      "passed": false,
+      "detail": "KeyError: 'errors'"
+    },
+    {
+      "name": "counts_by_service",
+      "passed": false,
+      "detail": "counts_by_service: wrong values"
+    },
+    {
+      "name": "rule_service_names",
+      "passed": false,
+      "detail": "KeyError: 'errors'"
+    },
+    {
+      "name": "rule_sorted_errors",
+      "passed": false,
+      "detail": "KeyError: 'errors'"
+    },
+    {
+      "name": "rule_schema_header",
+      "passed": false,
+      "detail": "RULE: the top-level object has \"schema_version\": 2 and \"generated_by\": \"log-triage\"."
+    }
+  ]
+}
